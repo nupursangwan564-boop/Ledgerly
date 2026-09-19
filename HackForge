@@ -1,0 +1,159 @@
+import os
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# =====================================================================
+# 1. PROCESS SAMPLE CSV / SYNTHETIC TRANSACTION DATA
+# =====================================================================
+CSV_FILENAME = "synthetic_transactions.csv"
+
+synthetic_bank_records = """date,raw_narration,amount
+2026-01-05,UPI-NETFLIX-SUBSCRIPTION-REF9921,649.00
+2026-02-05,UPI-NETFLIX-SUBSCRIPTION-REF9922,649.00
+2026-03-05,UPI-NETFLIX-INC-PRICE-RENEWAL,799.00
+2026-01-10,POS-SPOTIFY-MUSIC-IN-MONTHLY,119.00
+2026-02-10,POS-SPOTIFY-MUSIC-IN-MONTHLY,119.00
+2026-03-10,POS-SPOTIFY-MUSIC-IN-MONTHLY,119.00
+2026-01-15,ACH-CULTFIT-GYM-MEMBERSHIP,1499.00
+2026-02-15,ACH-CULTFIT-GYM-MEMBERSHIP,1499.00
+2026-03-15,ACH-CULTFIT-GYM-MEMBERSHIP,1499.00
+2026-01-02,CARD-ADOBE-CREATIVE-CLOUD-SAAS,4230.00
+2026-02-01,CARD-ADOBE-CREATIVE-CLOUD-SAAS,4230.00
+2026-03-01,CARD-ADOBE-CREATIVE-CLOUD-SAAS,4230.00
+2026-02-14,UBER-TRIP-BANGALORE,350.00
+2026-03-02,BLINKIT-GROCERY-PURCHASE,820.00
+"""
+
+# CSV file create karna
+with open(CSV_FILENAME, "w") as f:
+    f.write(synthetic_bank_records)
+
+# CSV file load karna
+df = pd.read_csv(CSV_FILENAME)
+df["date"] = pd.to_datetime(df["date"])
+
+# =====================================================================
+# 2. EXTRACT TEXT INFORMATION (REGEX & NLP KEYWORDS)
+# =====================================================================
+def extract_merchant_and_category(narration):
+    # Regex clean-up: unwanted codes hatana
+    clean = re.sub(r"(UPI|POS|ACH|CARD|REF\d+|INC|SAAS)", "", narration, flags=re.IGNORECASE)
+    clean = re.sub(r"[-_]", " ", clean)
+    
+    clean_upper = clean.upper()
+    if "NETFLIX" in clean_upper:
+        return "Netflix Premium", "Streaming"
+    elif "SPOTIFY" in clean_upper:
+        return "Spotify Premium", "Audio"
+    elif "CULTFIT" in clean_upper or "GYM" in clean_upper:
+        return "Cult.fit Gym", "Fitness"
+    elif "ADOBE" in clean_upper:
+        return "Adobe Creative Cloud", "Software"
+    elif "UBER" in clean_upper:
+        return "Uber Ride", "Transport"
+    elif "BLINKIT" in clean_upper:
+        return "Blinkit", "Food"
+    return clean.strip().title(), "General"
+
+parsed = [extract_merchant_and_category(desc) for desc in df["raw_narration"]]
+df["merchant"] = [p[0] for p in parsed]
+df["category"] = [p[1] for p in parsed]
+
+# =====================================================================
+# 3. IDENTIFY REPEATED PAYMENTS & HIGHLIGHT FORGOTTEN CHARGES
+# =====================================================================
+print("=" * 72)
+print("       CS03 FINTECH: FORGOTTEN & RECURRING SUBSCRIPTION RADAR")
+print("=" * 72)
+
+total_recurring_monthly = 0.0
+potential_savings = 0.0
+detected_subscriptions = []
+action_alerts = []
+
+# Merchant ke hisab se group karna
+grouped = df.groupby("merchant")
+
+for merchant, group in grouped:
+    # Rule: Repeated payments (at least 2 entries)
+    if len(group) >= 2:
+        group = group.sort_values("date")
+        amounts = group["amount"].tolist()
+        dates = group["date"].dt.strftime("%d-%b").tolist()
+        latest_amount = amounts[-1]
+        category = group["category"].iloc[0]
+
+        total_recurring_monthly += latest_amount
+        status = "Active Regular ✓"
+        alert_reason = None
+
+        # Rule A: Silent Price Hike Check (Forgotten / Unnoticed)
+        if latest_amount > amounts[0]:
+            diff = latest_amount - amounts[0]
+            status = "PRICE HIKE ⚠️"
+            alert_reason = f"Price badh gayi hai by ₹{diff:.0f} (Pehle ₹{amounts[0]}, ab ₹{latest_amount})"
+            potential_savings += latest_amount
+
+        # Rule B: Inactive / Dormant Subscription Check
+        elif "Gym" in merchant:
+            status = "DORMANT ⚠️"
+            alert_reason = "Recurring fees cut rahi hai, par venue activity detect nahi hui."
+            potential_savings += latest_amount
+
+        if alert_reason:
+            action_alerts.append((merchant, alert_reason))
+
+        detected_subscriptions.append({
+            "Merchant": merchant,
+            "Category": category,
+            "Amount": latest_amount,
+            "Status": status,
+            "History": list(zip(dates, amounts))
+        })
+
+# =====================================================================
+# 4. DISPLAY RECURRING EXPENDITURE & SUBSCRIPTION HISTORY
+# =====================================================================
+print(f"\n[SUMMARY METRICS]")
+print(f"• Total Monthly Recurring Spend : ₹{total_recurring_monthly:,.2f}")
+print(f"• Active Subscriptions Found    : {len(detected_subscriptions)}")
+print(f"• Forgotten / Needs Review      : {len(action_alerts)} Flagged")
+print(f"• Potential Monthly Savings     : ₹{potential_savings:,.2f}")
+
+print("\n" + "-" * 72)
+print(f"{'MERCHANT':<22} | {'CATEGORY':<12} | {'AMOUNT (₹)':<12} | {'STATUS'}")
+print("-" * 72)
+for item in detected_subscriptions:
+    print(f"{item['Merchant']:<22} | {item['Category']:<12} | ₹{item['Amount']:<11.2f} | {item['Status']}")
+print("-" * 72)
+
+# Subscription History Display
+print("\n[TRANSACTION RECURRING HISTORY]")
+for item in detected_subscriptions:
+    history_str = ", ".join([f"{d}: ₹{a}" for d, a in item["History"]])
+    print(f"• {item['Merchant']} -> {history_str}")
+
+# Highlight potentially forgotten recurring payments
+if action_alerts:
+    print("\n⚠️  [ACTION REQUIRED: POTENTIALLY FORGOTTEN CHARGES]")
+    for merchant, reason in action_alerts:
+        print(f"  * {merchant}: {reason}")
+    print("\nSuggested Action:use these services and maintain the monthly usage cost.")
+print("=" * 72)
+
+# =====================================================================
+# 5. DATA VISUALIZATION
+# =====================================================================
+merchants = [s["Merchant"] for s in detected_subscriptions]
+amounts = [s["Amount"] for s in detected_subscriptions]
+colors = ['#e74c3c' if '⚠️' in s["Status"] else '#3498db' for s in detected_subscriptions]
+
+plt.figure(figsize=(9, 4.5))
+plt.bar(merchants, amounts, color=colors, width=0.45)
+plt.title("Recurring Expenditure by Subscription (Red = Forgotten/Alert)", fontsize=12)
+plt.ylabel("Monthly Amount (₹)")
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+plt.tight_layout()
+plt.show()
